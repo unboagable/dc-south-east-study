@@ -1,35 +1,44 @@
-import requests
-import json
-import pandas as pd
+"""Fetch EJScreen data for multiple block groups and cities."""
+import sys
 import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# Define the API endpoint
-url = "https://ejscreen.epa.gov/mapper/ejscreenRESTbroker1.aspx"
+import pandas as pd
+import requests
 
-# List of block group IDs for southeast of Anacostia
-block_groups_anacostia = [
-    "110010074011", "110010074012", "110010074021", "110010074022",
-    "110010075011", "110010075012", "110010075021", "110010075022",
-    "110010076011", "110010076012", "110010076021", "110010076022",
-    "110010077011", "110010077012", "110010077021", "110010077022",
-    "110010078011", "110010078012", "110010078021", "110010078022",
-    "110010079011", "110010079012", "110010079021", "110010079022",
-    "110010080011", "110010080012", "110010080021", "110010080022",
-    "110010081011", "110010081012", "110010081021", "110010081022",
-    "110010082011", "110010082012", "110010082021", "110010082022"
-]
+from config import (
+    API_REQUEST_DELAY,
+    BLOCK_GROUPS_ANACOSTIA,
+    DC_AREA_ID,
+    DC_CITY_NAME,
+    EJScreen_API_URL,
+    PROCESSED_DATA_DIR,
+)
 
-def get_ejscreen_data(params, area_id=None):
-    response = requests.get(url, params=params)
+
+def get_ejscreen_data(
+    params: Dict[str, str], area_id: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Fetch data from EJScreen API with given parameters.
     
-    if response.status_code == 200:
+    Args:
+        params: API request parameters
+        area_id: Optional area ID for tracking
+        
+    Returns:
+        Flattened data dictionary or None if request failed
+    """
+    try:
+        response = requests.get(EJScreen_API_URL, params=params, timeout=30)
+        response.raise_for_status()
         data = response.json()
         
         # Extract relevant fields
         demographics = data.get("data", {}).get("demographics", {})
         main_stats = data.get("data", {}).get("main", {})
         extras = data.get("extras", {})
-
+        
         # Flatten the data
         flattened_data = {
             "area_id": area_id,  # Add area_id for tracking
@@ -40,15 +49,25 @@ def get_ejscreen_data(params, area_id=None):
             "pm25_air_quality": main_stats.get("RAW_E_PM25"),
             "traffic_exposure": main_stats.get("RAW_E_TRAFFIC"),
             "diesel_particulate_matter": main_stats.get("RAW_E_DIESEL"),
-            "life_expectancy": extras.get("RAW_HI_LIFEEXP", "N/A")
+            "life_expectancy": extras.get("RAW_HI_LIFEEXP", None),
         }
         
         return flattened_data
-    else:
-        print(f"Error fetching data for {area_id}: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching data for {area_id}: {e}", file=sys.stderr)
         return None
 
-def get_ejscreen_data_city(city, area_id):
+
+def get_ejscreen_data_city(city: str, area_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch EJScreen data for a city.
+    
+    Args:
+        city: City name
+        area_id: City area ID
+        
+    Returns:
+        Flattened data dictionary or None if request failed
+    """
     params = {
         "namestr": city,
         "geometry": "",
@@ -56,11 +75,20 @@ def get_ejscreen_data_city(city, area_id):
         "unit": "9035",
         "areatype": "city",
         "areaid": area_id,
-        "f": "json"
+        "f": "json",
     }
     return get_ejscreen_data(params, area_id=area_id)
+
+
+def get_ejscreen_data_bg(area_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch EJScreen data for a block group.
+    
+    Args:
+        area_id: Block group ID
         
-def get_ejscreen_data_bg(area_id):
+    Returns:
+        Flattened data dictionary or None if request failed
+    """
     params = {
         "namestr": area_id,
         "geometry": "",
@@ -68,30 +96,93 @@ def get_ejscreen_data_bg(area_id):
         "unit": "9035",
         "areatype": "blockgroup",
         "areaid": area_id,
-        "f": "json"
+        "f": "json",
     }
     return get_ejscreen_data(params, area_id=area_id)
 
-# Fetch data for all block groups southeast of Anacostia
-data_anacostia = []
-for bg in block_groups_anacostia:
-    result = get_ejscreen_data_bg(bg)
-    if result:
-        data_anacostia.append(result)
-    time.sleep(1)  # Avoid overwhelming the API
 
-# Convert to DataFrame
-df_anacostia = pd.DataFrame(data_anacostia)
+def fetch_multiple_block_groups(
+    block_group_ids: List[str], delay: float = API_REQUEST_DELAY
+) -> pd.DataFrame:
+    """Fetch EJScreen data for multiple block groups.
+    
+    Args:
+        block_group_ids: List of block group IDs
+        delay: Delay in seconds between API requests
+        
+    Returns:
+        DataFrame containing data for all block groups
+    """
+    data_list = []
+    total = len(block_group_ids)
+    
+    print(f"Fetching data for {total} block groups...")
+    
+    for i, bg_id in enumerate(block_group_ids, 1):
+        print(f"Processing {i}/{total}: {bg_id}")
+        result = get_ejscreen_data_bg(bg_id)
+        if result:
+            data_list.append(result)
+        else:
+            print(f"  Warning: Failed to fetch data for {bg_id}", file=sys.stderr)
+        
+        # Avoid overwhelming the API
+        if i < total:
+            time.sleep(delay)
+    
+    if not data_list:
+        print("Error: No data was successfully fetched", file=sys.stderr)
+        return pd.DataFrame()
+    
+    return pd.DataFrame(data_list)
 
-# Fetch data for DC
-data_dc = get_ejscreen_data_city("Washington", "1150000")
 
-# Convert to DataFrame
-df_dc = pd.DataFrame([data_dc])
+def save_dataframe(df: pd.DataFrame, output_path: Path) -> None:
+    """Save DataFrame to CSV file.
+    
+    Args:
+        df: DataFrame to save
+        output_path: Path to save CSV file
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False)
+    print(f"Data saved to: {output_path}")
 
-# Display data
-print("EJScreen Data - Southeast Anacostia:")
-print(df_anacostia.head())
 
-print("\nEJScreen Data - Washington, DC:")
-print(df_dc.head())
+def main() -> None:
+    """Main entry point for fetching study data."""
+    # Fetch data for all block groups southeast of Anacostia
+    print("=" * 60)
+    print("Fetching EJScreen Data - Southeast Anacostia")
+    print("=" * 60)
+    df_anacostia = fetch_multiple_block_groups(BLOCK_GROUPS_ANACOSTIA)
+    
+    if not df_anacostia.empty:
+        print(f"\nAnacostia Data Summary:")
+        print(df_anacostia.head())
+        print(f"\nShape: {df_anacostia.shape}")
+        
+        # Save to CSV
+        output_path = PROCESSED_DATA_DIR / "block_group" / "anacostia_ejscreen_data.csv"
+        save_dataframe(df_anacostia, output_path)
+    
+    # Fetch data for DC
+    print("\n" + "=" * 60)
+    print("Fetching EJScreen Data - Washington, DC")
+    print("=" * 60)
+    data_dc = get_ejscreen_data_city(DC_CITY_NAME, DC_AREA_ID)
+    
+    if data_dc:
+        df_dc = pd.DataFrame([data_dc])
+        print("\nDC Data Summary:")
+        print(df_dc.head())
+        
+        # Save to CSV
+        output_path = PROCESSED_DATA_DIR / "block_group" / "dc_ejscreen_data.csv"
+        save_dataframe(df_dc, output_path)
+    else:
+        print("Failed to fetch DC data", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

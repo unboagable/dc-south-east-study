@@ -4,15 +4,38 @@ version = "0.1.0"
 description = "Anacostia DC Air pollution and water warning system."
 authors = ["Your Name <your@email.com>"]
 readme = "README.md"
-packages = [{ include = "src/*.py" }]
+packages = [{ include = "src", from = "." }]
 
 [tool.poetry.dependencies]
-python = "^3.12"
-requests = "*"
-numpy = "*"
-pandas = "*"
+python = "^3.10"
+requests = "^2.31.0"
+numpy = "^1.24.0"
+pandas = "^2.0.0"
+geopandas = "^0.14.0"
+matplotlib = "^3.7.0"
+shapely = "^2.0.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^23.0.0"
+ruff = "^0.1.0"
+mypy = "^1.5.0"
+pytest = "^7.4.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
 
